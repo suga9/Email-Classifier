@@ -18,13 +18,25 @@ except Exception:
 
 st.set_page_config(page_title="Email Priority Classifier + Reply Generator", layout="wide")
 
-def classify_and_draft(subject: str, body: str, tone: str):
+def _reply_subject(original_subject: str) -> str:
+    s = original_subject or ""
+    return s if s.lower().startswith("re:") else f"Re: {s}"
+
+def _envelope(subject: str, body_only: str, sender_name: str, recipient_name: str) -> str:
+    """Wraps body with Subject, salutation, and signature (ending with Support)."""
+    reply_subj = _reply_subject(subject)
+    greeting = f"Dear {recipient_name.strip()}," if recipient_name.strip() else "Hello,"
+    signature = f"Best regards,\n\n{sender_name}\nSupport"
+    return f"Subject: {reply_subj}\n\n{greeting}\n\n{body_only.strip()}\n\n{signature}"
+
+def classify_and_draft(subject: str, body: str, tone: str, sender_name: str, recipient_name: str):
     """
     Pipeline:
       1) Clean + classify + summarize
-      2) Create fallback reply via templates
-      3) Try LLM as primary; if it returns text, use it. Otherwise keep fallback.
-    Returns: label, scores, intent, reply, reply_source ('llm' or 'template')
+      2) Create fallback body via templates
+      3) Try LLM for body-only; if successful, use it; else use fallback
+      4) Wrap with Subject/Salutation/Signature (Support)
+    Returns: label, scores, intent, reply_full, reply_source, reply_subject
     """
     raw = combine_subject_body(subject, body)
     cleaned = strip_quotes_and_disclaimers(raw)
@@ -32,40 +44,49 @@ def classify_and_draft(subject: str, body: str, tone: str):
     label, scores = classify_priority(cleaned)
     intent = summarize(cleaned)
 
-    # --- Fallback (always available) ---
-    fallback_reply = draft_reply(label, intent, tone=tone)
-    reply = fallback_reply
+    # --- Fallback body (no subject/salutation/signature) ---
+    # We convert your existing template into a body-only by removing any greeting/sign-off if present.
+    fallback_body = draft_reply(label, intent, tone=tone).strip()
+
+    body_only = fallback_body
     reply_source = "template"
 
     # --- Primary: LLM (only if enabled and successful) ---
     if llm_enabled():
-        prompt = f"""You are an email assistant. Draft a {tone} reply.
+        prompt = f"""You are an email assistant. Based on the details below, write ONLY the BODY of a {tone} reply.
+Do NOT include a subject line, greeting/salutation, or any sign-off/signature. Keep it under 180 words.
+Make it clear, concise, and actionable.
 
 Urgency: {label}
+Intent summary:
+{intent}
+
 Original email:
 Subject: {subject}
 Body:
 {cleaned}
-
-Intent summary:
-{intent}
-
-Write a clear, concise, professional reply the user can send as-is.
-Do not include code fences or markdown formatting. Keep it under 180 words unless escalation is essential."""
+"""
         llm_text = generate_with_llm(prompt)
         if llm_text and llm_text.strip():
-            reply = llm_text.strip()
+            body_only = llm_text.strip()
             reply_source = "llm"
 
-    return label, scores, intent, reply, reply_source
+    # Wrap with subject/salutation/signature (always ends with Support)
+    reply_full = _envelope(subject, body_only, sender_name=sender_name, recipient_name=recipient_name)
+    return label, scores, intent, reply_full, reply_source, _reply_subject(subject)
 
 st.title("📧 Email Priority Classifier + Reply Generator")
 
 with st.sidebar:
     st.header("Controls")
     tone = st.radio("Reply tone", options=["formal", "neutral", "friendly"], index=1)
+
     st.markdown("---")
-    st.caption("Batch mode expects CSV with `subject`, `body`. See sample in repo.")
+    st.subheader("Sender / Recipient")
+    sender_name = st.text_input("Your name (for signature)", value="")
+    recipient_name = st.text_input("Recipient name (optional)", value="")
+
+    st.caption("Batch mode expects CSV with `subject`, `body`.")
 
 tab1, tab2 = st.tabs(["Single Email", "Batch (CSV)"])
 
@@ -87,7 +108,9 @@ with tab1:
     with col2:
         st.subheader("Results")
         if go:
-            label, scores, intent, reply, reply_source = classify_and_draft(subject, body, tone)
+            label, scores, intent, reply_full, reply_source, reply_subject = classify_and_draft(
+                subject, body, tone, sender_name, recipient_name
+            )
             badge_color = {"Urgent": "🔴", "Normal": "🟡", "Low": "🟢"}.get(label, "🟡")
 
             st.markdown(f"**Urgency:** {badge_color} **{label}**")
@@ -96,14 +119,13 @@ with tab1:
             st.markdown("**Intent Summary**")
             st.write(intent)
 
-            st.markdown("**Reply Draft (editable)**")
-            edited = st.text_area("Draft", value=reply, height=220)
+            st.text_input("Reply Subject", value=reply_subject, disabled=True)
 
-            # Let the user know what produced the draft
-            if reply_source == "llm":
-                st.caption("Reply source: LLM-enhanced")
-            else:
-                st.caption("Reply source: Template fallback")
+            st.markdown("**Reply Draft (editable)**")
+            edited = st.text_area("Draft", value=reply_full, height=260)
+
+            # Let the user know what produced the body
+            st.caption("Reply body source: " + ("LLM-enhanced" if reply_source == "llm" else "Template fallback"))
 
             st.download_button("Download Reply (.txt)", data=edited, file_name="reply.txt")
 
@@ -128,7 +150,9 @@ with tab2:
                 for _, row in df.iterrows():
                     subj = str(row.get("subject", ""))
                     bdy = str(row.get("body", ""))
-                    label, scores, intent, reply, reply_source = classify_and_draft(subj, bdy, tone)
+                    label, scores, intent, reply_full, reply_source, reply_subject = classify_and_draft(
+                        subj, bdy, tone, sender_name, recipient_name
+                    )
                     results.append(
                         {
                             "subject": subj,
@@ -138,8 +162,9 @@ with tab2:
                             "score_normal": scores.get("Normal", 0.0),
                             "score_low": scores.get("Low", 0.0),
                             "intent_summary": intent,
-                            "reply_draft": reply,
-                            "reply_source": reply_source,  # helpful for QA
+                            "reply_subject": reply_subject,
+                            "reply_draft": reply_full,
+                            "reply_source": reply_source,
                         }
                     )
 
