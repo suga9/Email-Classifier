@@ -8,9 +8,9 @@ def llm_enabled():
     return os.getenv("LLM_PROVIDER", "0") == "1"
 
 def generate_with_llm(prompt: str) -> str:
-    # Pseudocode placeholder:
-    # import openai
-    # openai.api_key = os.getenv("OPENAI_API_KEY")
-    # resp = openai.chat.completions.create(...)
-    # return resp.choices[0].message.content
+    Pseudocode placeholder:
+    import openai
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+    resp = openai.chat.completions.create(...)
+    return resp.choices[0].message.content
     return None
