@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local data/models/secrets
+backend/.env
+models/
+*.sqlite
+*.log
+
+# Node/JS
+node_modules/
+
+# Archives & large binaries
+*.zip
+*.tar
+*.gz
+*.xz
+*.7z
+*.bin
+*.pt
+*.onnx
+*.safetensors
